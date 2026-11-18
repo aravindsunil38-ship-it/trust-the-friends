@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trust the Friends</title>
+<link href="https://fonts.googleapis.com/css2?family=Bowlby+One&family=Nunito:wght@500;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#2b1b5e;--ink:#1d1236;--paper:#fff6dc;--gold:#ffd23f;--pink:#ff4f8b;--mint:#2fe0a8;--sky:#4cc9ff}
+*{box-sizing:border-box}
+body{margin:0;background-color:var(--bg);background-image:radial-gradient(rgba(255,255,255,.09) 2px,transparent 2px);background-size:22px 22px;color:#fff;font:600 17px/1.5 Nunito,system-ui,sans-serif;padding:16px;display:flex;flex-direction:column;align-items:center}
+h1{font:400 clamp(32px,8vw,56px)/1 "Bowlby One",Impact,sans-serif;color:var(--gold);margin:8px 0 6px;text-align:center;text-shadow:3px 3px 0 var(--pink),6px 6px 0 var(--ink);animation:wobble 4s ease-in-out infinite}
+@keyframes wobble{0%,100%{transform:rotate(-1.5deg)}50%{transform:rotate(1.5deg)}}
+.tag{margin:0 0 16px;text-align:center;font-weight:800;color:var(--mint)}
+h2{font:400 24px/1.2 "Bowlby One",Impact,sans-serif;margin:0 0 10px;color:#fff}
+main,#board,#banner{width:100%;max-width:640px}
+#board{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.chip{background:var(--sky);color:var(--ink);border:2px solid var(--ink);border-radius:99px;padding:2px 12px;font-weight:800;font-size:14px;box-shadow:2px 2px 0 var(--ink)}
+.chip b{background:var(--ink);color:var(--gold);border-radius:99px;padding:0 8px;margin-left:4px}
+.chip.off{opacity:.5;filter:grayscale(1)}
+.card{background:var(--paper);color:var(--ink);border:3px solid var(--ink);border-radius:18px;padding:16px;margin:14px 0;box-shadow:6px 6px 0 var(--ink);animation:pop .25s ease-out}
+.card h2{color:var(--ink)}
+@keyframes pop{from{transform:scale(.96) translateY(8px);opacity:0}to{transform:none;opacity:1}}
+button,select,input{font:800 17px Nunito,sans-serif;border-radius:14px;border:3px solid var(--ink);padding:10px 16px;margin:4px 6px 4px 0;background:#fff;color:var(--ink)}
+input,select{box-shadow:3px 3px 0 var(--ink)}
+input::placeholder{color:#6b5f8a}
+button{cursor:pointer;background:var(--gold);box-shadow:4px 4px 0 var(--ink);transition:transform .08s,box-shadow .08s}
+button:hover{transform:translate(-1px,-1px);box-shadow:5px 5px 0 var(--ink)}
+button:active{transform:translate(3px,3px);box-shadow:1px 1px 0 var(--ink)}
+button.pick{background:var(--sky)}
+button.pick:hover{background:var(--mint)}
+:focus-visible{outline:4px solid var(--pink);outline-offset:2px}
+label.opt{display:inline-block;margin:4px 6px 4px 0;padding:4px 12px;background:#fff;color:var(--ink);border:3px solid var(--ink);border-radius:99px;cursor:pointer;box-shadow:2px 2px 0 var(--ink)}
+label.opt:has(input:checked){background:var(--mint)}
+label.opt input{margin:0 6px 0 0;padding:0;box-shadow:none}
+#err{color:#ffb3cf;font-weight:800;min-height:1.5em}
+summary{cursor:pointer;font-weight:800;color:var(--ink)}
+small{opacity:.85;display:block}
+#banner{background:var(--pink);color:#fff;text-align:center;padding:8px;font-weight:800;border:3px solid var(--ink);border-radius:12px;box-shadow:4px 4px 0 var(--ink);margin-bottom:12px}
+#banner[hidden]{display:none}
+#bar{display:flex;gap:8px;margin-bottom:10px;width:100%;max-width:640px}
+#bar[hidden]{display:none}
+#bar button[aria-pressed="true"]{background:var(--mint)}
+#bar button[aria-pressed="false"]{background:var(--pink);color:#fff}
+.bat{display:inline-block;transform-origin:90% 90%;animation:swing .45s ease-in-out 3}
+@keyframes swing{0%{transform:rotate(-60deg)}60%{transform:rotate(40deg)}100%{transform:rotate(-10deg)}}
+@media(prefers-reduced-motion:reduce){.bat,h1,.card{animation:none}button{transition:none}}
+</style></head><body>
+<h1>Trust the Friends</h1>
+<p class="tag">Who would your friends pick? 🎭</p>
+<div id="banner" role="status" hidden>Connection lost. Reconnecting...</div>
+<div id="bar" hidden>
+  <button id="mic" onclick="toggleMic()" aria-pressed="true">Mic on</button>
+  <button id="spk" onclick="toggleSpk()" aria-pressed="true">Speaker on</button>
+</div>
+<div id="board"></div><main id="screen"></main><p id="err" role="alert"></p>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io(), $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const screen = (h) => { $("screen").innerHTML = h; $("bar").hidden = phase === "home"; }, err = (m) => ($("err").textContent = m || "");
+// CHANGED: myId replaces socket.id everywhere (socket.id changes on every reconnect)
+let players = [], host = "", phase = "home", code = "", local = null, pcs = {}, myId = "", voiceTried = false, userMic = true, gameMuted = false, spkOn = true;
+const others = () => players.filter((p) => p.id !== myId);
+const url = (audio, mime) => URL.createObjectURL(new Blob([audio], { type: mime }));
+/* ---------- NEW: mic and speaker buttons ---------- */
+// Your mic is live only when you have it ON and the game is not muting it (recording turns)
+const applyMic = () => local && local.getAudioTracks().forEach((t) => (t.enabled = userMic && !gameMuted));
+const setMic = (on) => { gameMuted = !on; applyMic(); }; // game code keeps calling this as before
+function showBar() {
+  $("mic").textContent = userMic ? "Mic on" : "Mic off"; $("mic").setAttribute("aria-pressed", userMic);
+  $("spk").textContent = spkOn ? "Speaker on" : "Speaker off"; $("spk").setAttribute("aria-pressed", spkOn);
+}
+function toggleMic() {
+  if (!local) return err("Mic is blocked. Allow it in your browser settings, then reload. You will rejoin automatically.");
+  err(); userMic = !userMic; applyMic(); showBar();
+}
+function toggleSpk() { // mutes your friends' voices. Mimic clips still play.
+  spkOn = !spkOn; document.querySelectorAll("audio.voice").forEach((a) => (a.muted = !spkOn)); showBar();
+}
+
+/* ---------- NEW: saved session, used to rejoin after a disconnect ---------- */
+const SKEY = "ttf-session";
+const saved = () => { try { return JSON.parse(localStorage.getItem(SKEY)); } catch { return null; } };
+const keep = (s) => { try { s ? localStorage.setItem(SKEY, JSON.stringify(s)) : localStorage.removeItem(SKEY); } catch {} };
+
+/* ---------- voice chat (WebRTC mesh) ---------- */
+async function initVoice() { voiceTried = true; try { local = await navigator.mediaDevices.getUserMedia({ audio: true }); applyMic(); } catch { err("Mic blocked: you can listen but not talk."); } }
+function pc(id) {
+  if (pcs[id]) return pcs[id];
+  const c = (pcs[id] = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] }));
+  if (local) local.getTracks().forEach((t) => c.addTrack(t, local)); else c.addTransceiver("audio", { direction: "recvonly" });
+  c.onicecandidate = (e) => e.candidate && socket.emit("signal", { to: id, data: { ice: e.candidate } });
+  c.ontrack = (e) => { let a = $("a" + id); if (!a) { a = document.createElement("audio"); a.id = "a" + id; a.className = "voice"; a.autoplay = true; document.body.appendChild(a); } a.muted = !spkOn; a.srcObject = e.streams[0]; };
+  return c;
+}
+const dropCall = (id) => { if (pcs[id]) { pcs[id].close(); delete pcs[id]; } const a = $("a" + id); a && a.remove(); };
+socket.on("signal", async ({ from, data }) => {
+  const c = pc(from);
+  if (data.sdp) {
+    await c.setRemoteDescription(data.sdp);
+    if (data.sdp.type === "offer") { await c.setLocalDescription(await c.createAnswer()); socket.emit("signal", { to: from, data: { sdp: c.localDescription } }); }
+  } else if (data.ice) { try { await c.addIceCandidate(data.ice); } catch {} }
+});
+// CHANGED: calls to offline players are closed; a returning player gets a fresh call
+async function syncCalls() {
+  Object.keys(pcs).forEach((id) => { const p = players.find((q) => q.id === id); if (!p || p.online === false) dropCall(id); });
+  for (const p of others()) if (p.online !== false && !pcs[p.id] && myId > p.id) { const c = pc(p.id); await c.setLocalDescription(await c.createOffer()); socket.emit("signal", { to: p.id, data: { sdp: c.localDescription } }); }
+}
+
+/* ---------- recording ---------- */
+let rec, chunks, blob, timer;
+const recHtml = (send) => `<button id="rb" onclick="toggleRec()">Start recording</button><br><audio id="pv" controls hidden></audio><br><button id="sb" hidden onclick="${send}()">Send</button>`;
+async function toggleRec() {
+  if (rec && rec.state === "recording") return rec.stop();
+  let s; try { s = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { return err("Mic blocked. Allow microphone access and try again."); }
+  err(); setMic(false);
+  rec = new MediaRecorder(s); chunks = [];
+  rec.ondataavailable = (e) => chunks.push(e.data);
+  rec.onstop = () => { clearTimeout(timer); s.getTracks().forEach((t) => t.stop()); blob = new Blob(chunks, { type: rec.mimeType }); $("pv").src = URL.createObjectURL(blob); $("pv").hidden = $("sb").hidden = false; $("rb").textContent = "Record again"; };
+  rec.start(); $("rb").textContent = "Stop"; timer = setTimeout(() => rec.state === "recording" && rec.stop(), 10000);
+}
+const upload = async () => ({ audio: await blob.arrayBuffer(), mime: blob.type });
+
+/* ---------- home & lobby ---------- */
+function home() { phase = "home"; screen(`<div class="card"><input id="name" placeholder="Your name" maxlength="14"><br><select id="max"><option value="6">6 players</option><option value="10">10 players</option></select><button onclick="create()">Create room</button></div><div class="card"><input id="code" placeholder="Room code" maxlength="4" size="8"><button onclick="join()">Join room</button></div><small>Allow your microphone when asked: the game uses voice chat. Mimic clips and favorite lines are recorded and deleted when the game ends.</small>`); }
+// CHANGED: a name is required (no more "Player" default)
+const nameVal = () => $("name").value.trim().replace(/\s+/g, " ");
+async function create() {
+  err(); const n = nameVal();
+  if (n.length < 2) return err("Enter your name first (at least 2 characters).");
+  await initVoice(); socket.emit("createRoom", { name: n, maxPlayers: +$("max").value });
+}
+async function join() {
+  err(); const n = nameVal(), c = $("code").value.trim().toUpperCase();
+  if (n.length < 2) return err("Enter your name first (at least 2 characters).");
+  await initVoice(); socket.emit("joinRoom", { name: n, code: c });
+}
+const chip = (p, score) => `<span class="chip${p.online === false ? " off" : ""}">${esc(p.name)}${score ? ` <b>${p.score}</b>` : ""}${p.online === false ? " (offline)" : ""}</span>`;
+function lobby() { screen(`<div class="card"><h2>🎉 Room ${esc(code)}</h2><p>Share this code with your friends.</p>${players.map((p) => chip(p)).join(" ")}<p>${myId === host ? `<button onclick="socket.emit('startGame')">Start game</button>` : "Waiting for the host to start..."}</p></div>`); }
+// CHANGED: server sends { code, id, token, inGame }. id is permanent, token is the private rejoin key.
+socket.on("roomJoined", async (d) => {
+  code = d.code; myId = d.id || socket.id; if (d.token) keep({ code: d.code, token: d.token });
+  Object.keys(pcs).forEach(dropCall); // rebuild all calls after a rejoin
+  if (!voiceTried) await initVoice();
+  err(); showBar();
+  if (d.inGame) { phase = "waiting"; screen(`<div class="card"><h2>You're back in</h2><p>Waiting for the next step...</p></div>`); } else phase = "lobby";
+});
+socket.on("players", (d) => { players = d.list; host = d.host; $("board").innerHTML = players.map((p) => chip(p, true)).join(""); if (phase === "lobby") lobby(); syncCalls(); });
+socket.on("errorMsg", err);
+socket.on("info", (t) => { phase = "info"; screen(`<div class="card"><h2>${esc(t)}</h2></div>`); });
+const nextBtn = () => (myId === host ? `<button onclick="socket.emit('next')">Continue</button>` : "<small>Waiting for the host to continue...</small>");
+
+/* ---------- NEW: connection and rejoin ---------- */
+socket.on("connect", () => { $("banner").hidden = true; const s = saved(); if (s) socket.emit("rejoin", s); });
+socket.on("disconnect", () => ($("banner").hidden = false));
+socket.on("rejoinFailed", (m) => { keep(null); home(); err(m || "Could not rejoin. Join again with your name."); });
+
+/* ---------- dialogue ---------- */
+socket.on("dialogue", () => { phase = "dialogue"; setMic(false); screen(`<div class="card"><h2>🎤 Record your favorite line</h2><p>Say a line you're famous for (up to 10 seconds). A friend will have to mimic it later, so make it count.</p>${recHtml("sendDialogue")}</div>`); });
+async function sendDialogue() { socket.emit("submitDialogue", await upload()); screen(`<div class="card"><h2>Line saved</h2><p>Waiting for the others...</p></div>`); }
+
+/* ---------- questions ---------- */
+socket.on("question", (d) => { phase = "voting"; setMic(true); screen(`<div class="card"><small>Round ${d.round}, question ${d.n} of ${d.total}</small><h2>${esc(d.text)}</h2>${d.players.filter((p) => p.id !== myId).map((p) => `<button class="pick" onclick="vote('${p.id}')">${esc(p.name)}</button>`).join("")}</div>`); });
+function vote(id) { socket.emit("vote", { targetId: id }); screen(`<div class="card"><h2>✅ Vote locked in</h2><p>Waiting for the others...</p></div>`); }
+
+/* ---------- guessing ---------- */
+let guessN = 0;
+socket.on("guess", (d) => {
+  phase = "guess"; guessN = d.summary.length;
+  screen(`<h2>Round ${d.round}: who voted for you?</h2><p>Tick everyone you think voted for you on each question. Explain your reasoning in voice chat. Correct: +1. Wrong or missed: a bat hit.</p>` +
+    d.summary.map((s, i) => `<div class="card"><b>${esc(s.q)}</b><br>${d.players.map((p) => `<span class="chip">${esc(p.name)} <b>${s.counts[p.id]}</b></span>`).join(" ")}<p>You got <b>${s.counts[myId] || 0}</b> votes. Who voted for you?</p>${others().map((p) => `<label class="opt"><input type="checkbox" data-q="${i}" value="${p.id}">${esc(p.name)}</label>`).join("")}</div>`).join("") +
+    `<button onclick="sendGuess()">Lock in guesses</button>`);
+});
+function sendGuess() {
+  const guesses = []; for (let i = 0; i < guessN; i++) guesses.push([...document.querySelectorAll(`input[data-q="${i}"]:checked`)].map((x) => x.value));
+  socket.emit("submitGuess", { guesses }); screen(`<div class="card"><h2>Guesses locked</h2><p>Waiting for the others...</p></div>`);
+}
+socket.on("guessResults", ({ hits }) => {
+  phase = "guessDone";
+  const by = {}; hits.forEach((h) => (by[h.victim] = (by[h.victim] || []).concat(h)));
+  const names = Object.keys(by);
+  screen(`<h2>🏏 The bat comes out</h2>` + (names.length ? names.map((n) => `<details class="card" open><summary>${esc(n)} took ${by[n].length} hit${by[n].length > 1 ? "s" : ""} <span class="bat">🏏</span></summary>${by[n].map((h) => `<small>${esc(h.hitter)} hit ${esc(n)} (${h.why}): ${esc(h.q)}</small>`).join("")}</details>`).join("") : `<div class="card">Perfect round. Nobody got hit!</div>`) + nextBtn());
+});
+
+/* ---------- mimic ---------- */
+socket.on("mimicTask", (d) => { phase = "mimic"; setMic(false); screen(`<div class="card"><h2>Mimic ${esc(d.target)}</h2><p>Listen to their line, then record your best impression. Your mic is muted for the room until you send it.</p><audio controls src="${url(d.audio, d.mime)}"></audio><br>${recHtml("sendMimic")}</div>`); });
+async function sendMimic() { socket.emit("submitMimic", await upload()); setMic(true); }
+socket.on("mimicVote", (d) => {
+  phase = "mimicVote"; setMic(true);
+  const opts = others().map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  screen(`<div class="card"><h2>🕵️ Who is faking it?</h2><audio controls autoplay src="${url(d.audio, d.mime)}"></audio><p>Who mimicked?<br><select id="who">${opts}</select></p>${d.isTarget ? "<small>It's your voice, so you only guess the mimicker: +3 if right.</small>" : `<p>Whose voice was it?<br><select id="whose">${opts}</select></p>`}<button onclick="sendMV()">Lock in</button></div>`);
+});
+function sendMV() { socket.emit("submitMimicVote", { who: $("who").value, whose: $("whose") ? $("whose").value : null }); screen(`<div class="card"><h2>Answer locked</h2><p>Waiting for the others...</p></div>`); }
+socket.on("mimicResult", (d) => { phase = "mimicDone"; screen(`<div class="card"><h2>${esc(d.mimicker)} mimicked ${esc(d.target)}</h2>${d.lines.map((l) => `<small>${esc(l)}</small>`).join("")}</div>${nextBtn()}`); });
+
+// CHANGED: game over clears the saved session so the next visit starts fresh
+socket.on("over", ({ players: ps }) => { keep(null); phase = "over"; screen(`<h2>🏆 Game over</h2>${[...ps].sort((a, b) => b.score - a.score).map((p, i) => `<div class="card">${i === 0 ? "🏆 " : ""}<b>${esc(p.name)}</b>: ${p.score} points</div>`).join("")}`); });
+
+// CHANGED: with a saved session, wait for the rejoin instead of showing the home screen
+saved() ? screen(`<div class="card"><h2>Rejoining...</h2></div>`) : home();
+</script></body></html>
